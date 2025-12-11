@@ -1,18 +1,109 @@
-name:tests
-on:push
+name: Java CI with Maven and Smart Auto Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [ "main", "master" ]
+
 jobs:
-run_tests:
-runs-on:ubuntu-latest
-steps:-name:Checkouttherepository
-uses:actions/checkout@v4-name:SetupJDK17
-uses:actions/setup-java@v4
-with:
-java-version:'17'
-distribution:'temurin'-name:CacheMavenpackages
-uses:actions/cache@v4
-with:
-path:~/.m2/repository
-key:${{runner.os}}-m2-${{hashFiles('**/pom.xml')}}
-restore-keys:|
-${{runner.os}}-m2--name:RuntestswithMaven
-run:mvn-Btest--filepom.xml
+  # ---------------------------------------------------
+  # 第一阶段：运行 Maven 测试
+  # ---------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Run tests with Maven
+        # 使用 -B (Batch mode) 减少日志冗余
+        run: mvn -B test --file pom.xml
+
+  # ---------------------------------------------------
+  # 第二阶段：自动合并 (带评论功能)
+  # ---------------------------------------------------
+  auto-merge:
+    needs: test
+    # 安全检查：仅当测试通过，且 PR 并非来自 Fork 仓库（防止恶意代码利用你的 Token）时运行
+    if: |
+      needs.test.result == 'success' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: write
+      issues: write  # 需要此权限来发表评论
+
+    steps:
+      - name: Auto merge logic
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const { owner, repo } = context.repo;
+
+            // 1. 获取 PR 详情以检查是否可合并 (mergeable 状态)
+            const { data: pr } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber
+            });
+
+            if (pr.mergeable) {
+              // 2. 发送“开始合并”评论
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: '✅ 测试通过，检测到无冲突，准备自动合并...'
+              });
+
+              try {
+                // 3. 执行合并操作
+                await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                  commit_title: `Merge pull request #${prNumber} (Auto-merged)`,
+                  commit_message: `Auto-merged by GitHub Actions after passing tests.`,
+                  merge_method: 'merge' // 可选: 'squash', 'rebase'
+                });
+
+                // 4. 发送“成功”评论
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body: '🎉 PR 已成功自动合并！'
+                });
+
+              } catch (error) {
+                // 5. 捕获合并错误（如临时变动导致的冲突）
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body: `❌ 自动合并失败，请人工介入。\n\n错误信息: ${error.message}`
+                });
+                core.setFailed(error.message);
+              }
+
+            } else {
+              // 6. 如果 GitHub 判断有冲突
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: '⚠️ 检测到合并冲突，无法自动合并。请手动解决冲突后再试。'
+              });
+              core.setFailed('PR has merge conflicts.');
+            }
