@@ -37,8 +37,8 @@ jobs:
       run: mvn clean compile
       
     # 5. 运行测试
-    - name: Run solution2Test1
-      run: mvn -B test -Dtest="*solution2Test1"
+    - name: Run Solution2Test
+      run: mvn -B test -Dtest="*Solution2Test"
       
     # 6. （可选）生成测试报告
     - name: Generate test report
